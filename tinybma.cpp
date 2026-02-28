@@ -291,6 +291,61 @@ void display_help(){
     << std::endl;
 }
 
+inline float block_mse(int mx, int my, int bx, int by, int block_size, const std::vector<unsigned char>&input_y, const std::vector<unsigned char>&target_y, int img_width, int img_height){
+    float mse = 0;
+    for (int ky = 0; ky < block_size; ++ky) {
+        for (int kx = 0; kx < block_size; ++kx) {
+
+            int src_x = bx * block_size + kx;
+            int src_y = by * block_size + ky;
+            int dest_x = src_x + mx;
+            int dest_y = src_y + my;
+
+            // Ignore out of bounds pixels from the current bloc
+            if (src_x >= img_width || src_y >= img_height)
+                continue;
+
+            // Consider out of bound pixel after moving to be full of zeros
+            int s;
+            if(dest_x < 0 || dest_y < 0 || dest_x >= img_width || dest_y >= img_height)
+                s = 0;
+            else 
+                s = input_y[dest_y * img_width + dest_x];
+
+            int d = target_y[src_y * img_width + src_x] - s;
+            mse += static_cast<float>(d*d);
+        }
+    }
+    return mse / static_cast<float>(block_size*block_size);
+}
+
+inline void fsbma(int bx, int by, int block_size, int max_search, std::vector<int>&mv, int mv_width, const std::vector<unsigned char>&input_y, const std::vector<unsigned char>&target_y, int img_width, int img_height){
+    // Use current position as the initial best MSE
+    // Ensures the best selected vector is (0,0) if all motions are equal.
+    int best_mv_x = 0;
+    int best_mv_y = 0;
+    float best_mse = block_mse(best_mv_x, best_mv_y, bx, by, block_size, input_y, target_y, img_width, img_height);
+    // Perform lookup in target image over all possible direction
+    // and keep the best one
+    for (int my = -max_search; my <= max_search; ++my) {
+        for (int mx = -max_search; mx <= max_search; ++mx) {
+            // The no motion case is already precomputed
+            if(my == 0 && mx == 0)
+                continue;
+            float mse = block_mse(mx, my, bx, by, block_size, input_y, target_y, img_width, img_height);
+            if (mse < best_mse) {
+                best_mse = mse;
+                best_mv_x = mx;
+                best_mv_y = my;
+            }
+        }
+    }
+    // Store best motion vector
+    int* v = &mv[0] + (2 * (by * mv_width + bx));
+    v[0] = best_mv_x;
+    v[1] = best_mv_y;
+}
+
 inline void update_progress(int* progress, int total, bool enabled){
     if(enabled){
         int previous = static_cast<int>(100.0f * static_cast<float>(*progress) / static_cast<float>(total));
@@ -453,58 +508,7 @@ int main(int argc, char const *argv[])
     #pragma omp parallel for collapse(2)
     for (int by = 0; by < mv_height; ++by) {
         for (int bx = 0; bx < mv_width; ++bx) {
-            // Perform lookup in target image over all possible direction
-            // and keep the best one
-            int best_mv_x = 0;
-            int best_mv_y = 0;
-            float best_mse = 1e7;
-            //int best_sad = INT_MAX;
-            int used = 0;
-            for (int my = -args.max_search; my <= args.max_search; ++my) {
-                for (int mx = -args.max_search; mx <= args.max_search; ++mx) {
-                    // Compute SAD
-                    //int sad = 0;
-                    float mse = 0;
-                    for (int ky = 0; ky < args.block_size; ++ky) {
-                        for (int kx = 0; kx < args.block_size; ++kx) {
-
-                            int src_x = bx * args.block_size + kx;
-                            int src_y = by * args.block_size + ky;
-                            int dest_x = src_x + mx;
-                            int dest_y = src_y + my;
-
-                            // Ignore out of bounds pixels from the current bloc
-                            if (src_x >= img_width || src_y >= img_height)
-                                continue;
-                            
-                            ++used;
-                            
-                            // Consider out of bound pixel after moving to be full of zeros
-                            int s;
-                            if(dest_x < 0 || dest_y < 0 || dest_x >= img_width || dest_y >= img_height)
-                                s = 0;
-                            else 
-                                s = input_y[dest_y * img_width + dest_x];
-
-                            int d = target_y[src_y * img_width + src_x] - s;
-                        
-                            mse += static_cast<float>(d*d);
-                        }
-                    }
-                    mse /= static_cast<float>(used*used);
-                    if (mse < best_mse) {
-                        best_mse = mse;
-                        best_mv_x = mx;
-                        best_mv_y = my;
-                    }
-                }
-            }
-            // Store best
-            int* v = &mv[0] + (2 * (by * mv_width + bx));
-            v[0] = best_mv_x;
-            v[1] = best_mv_y;
-
-            // Log progress
+            fsbma(bx, by, args.block_size, args.max_search, mv, mv_width, input_y, target_y, img_width, img_height);
             #pragma omp critical
             update_progress(&progress, mv_width * mv_height, args.verbose);
         }
@@ -529,7 +533,7 @@ int main(int argc, char const *argv[])
             float vy = static_cast<float>(v[1]) / static_cast<float>(args.max_search);
 
             Color color = args.color_map == UV ? vec2uv(vx, vy) : vec2hsv(vx, vy);
-            
+
             unsigned char* pixel = &flowmap[0] + (3 * (i * mv_width + j));
             pixel[0] = color.r;
             pixel[1] = color.g;
