@@ -471,11 +471,14 @@ int main(int argc, char const *argv[])
                 color.g = static_cast<unsigned char>(g);
                 color.b = 0;
             } else if(args.color_map == HSV){
-                float angle = std::atan2(vy, vx);
-                float hue = (angle > 0 ? angle : (2.f * PI + angle)) * 180.f / PI;
-                float max_length = std::sqrt(static_cast<float>(2 * args.max_search * args.max_search));
-                float saturation = 100.0f * std::sqrt(vx * vx + vy * vy) / max_length;
-                color = hsv2rgb(hue, saturation, 100.0f);
+                if(vx*vx + vy*vy > 0){
+                    float angle = std::atan2(vy, vx);
+                    float hue = (angle > 0 ? angle : (2.f * PI + angle)) * 180.f / PI;
+                    float max_length = std::sqrt(static_cast<float>(2 * args.max_search * args.max_search));
+                    float saturation = 100.0f * std::sqrt(vx * vx + vy * vy) / max_length;
+                    color = hsv2rgb(hue, saturation, 100.0f);
+                } else
+                    color = {255, 255, 255};
             }
             
             unsigned char* pixel = &flowmap[0] + (3 * (i * mv_width + j));
