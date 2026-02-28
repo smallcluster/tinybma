@@ -15,6 +15,25 @@
 #define DEFAULT_MAXSEARCH 48
 
 //------------------------------------------------------------------------------------------------------------------------------
+//  Utils
+//------------------------------------------------------------------------------------------------------------------------------
+
+inline int clamp(int val, int min, int max){
+    if(val < min)
+        return min;
+    else if(val > max)
+        return max;
+    return val;
+}
+inline float clampf(float val, float min, float max){
+    if(val < min)
+        return min;
+    else if(val > max)
+        return max;
+    return val;
+}
+
+//------------------------------------------------------------------------------------------------------------------------------
 //  Color processing
 //------------------------------------------------------------------------------------------------------------------------------
 struct Color {
@@ -513,16 +532,8 @@ int main(int argc, char const *argv[])
                 int* v = &mv[0] + (2 * bi);
 
                 // Clamped predicition coords
-                int px = x + v[0];
-                int py = y + v[1];
-                if(px < 0)
-                    px = 0;
-                if(px >= img_width)
-                    px = img_width-1;
-                if(py < 0)
-                    py = 0;
-                if(py >= img_height)
-                    py = img_height-1;
+                int px = clamp(x + v[0], 0, img_width-1);
+                int py = clamp(y + v[1], 0, img_height-1);
 
                 int i = y * img_width + x;
                 int pi = py * img_width + px;
