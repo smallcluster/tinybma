@@ -1,6 +1,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <chrono>
 #include <omp.h>
 
 #define PI 3.14159265358979311600f
@@ -247,6 +248,12 @@ void display_help(){
 
 int main(int argc, char const *argv[])
 {
+    // To time program execution
+    using std::chrono::high_resolution_clock;
+    using std::chrono::duration_cast;
+    using std::chrono::duration;
+    using std::chrono::milliseconds;
+    auto t1 = high_resolution_clock::now();
 
     // Parse CLI and show help if needed
     CLIArgs args;
@@ -532,8 +539,14 @@ int main(int argc, char const *argv[])
         }
     }
 
-    if (args.verbose)
-        std::cout << "Done." << std::endl;
+    if (args.verbose){
+        auto t2 = high_resolution_clock::now();
+        duration<double, std::milli> ms_double = t2 - t1;
+        double seconds = ms_double.count() / 1000.0;
+
+        std::cout << "Done. Took " << seconds << " s" << std::endl;
+    }
+        
 
     return 0;
 }
