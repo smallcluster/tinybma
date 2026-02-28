@@ -54,7 +54,23 @@ struct Color {
     };
 };
 
-Color hsv2rgb(float H, float S, float V) {
+inline int clip(int val){
+    if(val < 0)
+        return 0;
+    else if (val > 255)
+        return 255;
+    return val;
+}
+
+inline float clipf(float val){
+    if(val < 0)
+        return 0;
+    else if (val > 255)
+        return 255;
+    return val;
+}
+
+inline Color hsv2rgb(float H, float S, float V) {
     float r = 1.0f;
     float g = 1.0f;
     float b = 1.0f;
@@ -78,17 +94,27 @@ Color hsv2rgb(float H, float S, float V) {
     case 5: r = v, g = p, b = q; break;
     }
     
-    return { static_cast<unsigned char>(r * 255.f), 
-             static_cast<unsigned char>(g * 255.f), 
-             static_cast<unsigned char>(b * 255.f) };
+    return { static_cast<unsigned char>(clipf(r * 255.f)), 
+             static_cast<unsigned char>(clipf(g * 255.f)), 
+             static_cast<unsigned char>(clipf(b * 255.f)) };
 }
 
 // Adapted from https://learn.microsoft.com/fr-fr/windows/win32/medfound/recommended-8-bit-yuv-formats-for-video-rendering#converting-rgb888-to-yuv-444
-Color srgb2bt601(unsigned char r, unsigned char g, unsigned char b) {
+inline Color srgb2bt601(unsigned char r, unsigned char g, unsigned char b) {
     unsigned char y = ( (  66 * r + 129 * g +  25 * b + 128) >> 8) +  16;
     unsigned char u = ( ( -38 * r -  74 * g + 112 * b + 128) >> 8) + 128;
     unsigned char v = ( ( 112 * r -  94 * g -  18 * b + 128) >> 8) + 128;
     return {y, u, v};
+}
+
+inline Color bt6012srgb(unsigned char y, unsigned char u, unsigned char v) {
+    int C = y - 16;
+    int D = u - 128;
+    int E = v - 128;
+    unsigned char r = clip(( 298 * C           + 409 * E + 128) >> 8);
+    unsigned char g = clip(( 298 * C - 100 * D - 208 * E + 128) >> 8);
+    unsigned char b = clip(( 298 * C + 516 * D           + 128) >> 8);
+    return {r, g, b};
 }
 
 //------------------------------------------------------------------------------------------------------------------------------
@@ -99,6 +125,7 @@ enum ColorMaps {
     HSV,
     UV
 };
+
 struct CLIArgs {
     int block_size = DEFAULT_BLOCKSIZE;
     int max_search = DEFAULT_MAXSEARCH;
@@ -246,7 +273,6 @@ CLIArgs parse_cli(int argc, char const *argv[]){
 //------------------------------------------------------------------------------------------------------------------------------
 
 
-
 void display_help(){
     std::cout << "USAGE: tinybma [OPTION]... REF_IMG TARGET_IMG OUTPUT_IMG\n" 
     << "\n"
@@ -387,7 +413,7 @@ int main(int argc, char const *argv[])
     stbi_image_free(target_data);
     target_data = nullptr;
 
-    // Export luma values
+    // Export bt.601 luma values without converting to sRGB
     if(args.export_luma){
         int r = stbi_write_png(input_luma_path.c_str(), input_width, input_height, 1, input_y.data(), input_width);
         if(!r){
