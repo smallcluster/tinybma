@@ -2,7 +2,7 @@
 *An optical flowmap generator from motion vectors using a Full Search Block Matching Algorithms (FSBMA) written in c++*
 
 **Features:**
-- Motion compensation on the luma chanel **only** (input images are converted from full sRGB to YUV BT.601)
+- MSE based motion compensation on the luma chanel **only** (input images are converted from full sRGB to YUV BT.601)
 - Two visualization mode for computed motion vectors:
     - **HSV** mode where hue encodes orientation and value encodes normalized norm relative to the maximum displacement
     - **UV** mode where the red and green channels encode horizontal and vertical displacement
