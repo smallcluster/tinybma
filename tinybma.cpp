@@ -239,7 +239,7 @@ void display_help(){
     << "-b, --blocksize [INT]    Block size. Default=" << DEFAULT_BLOCKSIZE << "\n" 
     << "-m, --maxsearch [INT]    Maximum allowed block movement in whole pixels. Default=" << DEFAULT_MAXSEARCH <<"\n" 
     << "-v, --verbose            Display infos and progression. (optional)\n"
-    << "-l, --luma               Export converted sRGB -> YUV 4:4:4 BT.601 's luma component of the REF_IMG and TARGET_IMG."
+    << "-l, --luma               Export converted sRGB -> YUV 4:4:4 BT.601 's luma component of the REF_IMG and TARGET_IMG.\n"
     << "-r, --residue            Export the luma residue to reconstruct the TARGET_IMG's luma value.\n"
     << "-c, --colormap [hsv|uv]  Choose the colormap to visualize the optical flow. Default=hsv\n"
     << std::endl;
