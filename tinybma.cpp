@@ -290,6 +290,17 @@ void display_help(){
     << "-c, --colormap [hsv|uv]  Choose the colormap to visualize the optical flow. Default=hsv\n"
     << std::endl;
 }
+
+inline void update_progress(int* progress, int total, bool enabled){
+    if(enabled){
+        int previous = static_cast<int>(100.0f * static_cast<float>(*progress) / static_cast<float>(total));
+        ++(*progress);
+        int next = static_cast<int>(100.0f * static_cast<float>(*progress) / static_cast<float>(total));
+        if (previous != next)
+            std::cout << "Progress: " << *progress << "/" << total << " (" << next << "%)" << std::endl;
+    }
+}
+
 inline Color vec2uv(float vx, float vy){
     float r =  0.5f * 255.0f * (1.0f + vx);
     float g = 0.5f * 255.0f * (1.0f + vy);
@@ -495,15 +506,7 @@ int main(int argc, char const *argv[])
 
             // Log progress
             #pragma omp critical
-            {
-                if (args.verbose) {
-                    int previous = static_cast<int>(100.0f * static_cast<float>(progress) / static_cast<float>(mv_width * mv_height));
-                    ++progress;
-                    int next = static_cast<int>(100.0f * static_cast<float>(progress) / static_cast<float>(mv_width * mv_height));
-                    if (previous != next)
-                        std::cout << "Progress: " << progress << "/" << mv_width * mv_height << " (" << next << "%)" << std::endl;
-                }
-            }
+            update_progress(&progress, mv_width * mv_height, args.verbose);
         }
     }
 
