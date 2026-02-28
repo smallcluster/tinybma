@@ -264,6 +264,20 @@ void display_help(){
     << "-c, --colormap [hsv|uv]  Choose the colormap to visualize the optical flow. Default=hsv\n"
     << std::endl;
 }
+inline Color vec2uv(float vx, float vy){
+    float r =  0.5f * 255.0f * (1.0f + vx);
+    float g = 0.5f * 255.0f * (1.0f + vy);
+    return {static_cast<unsigned char>(clipf(r)), static_cast<unsigned char>(clipf(g)), 0};
+}
+
+inline Color vec2hsv(float vx, float vy) {
+    if(vx*vx + vy*vy == 0) 
+        return {255, 255, 255};
+    float angle = std::atan2(vy, vx);
+    float hue = (angle > 0 ? angle : (2.f * PI + angle)) * 180.f / PI;
+    float saturation = 100.0f * std::sqrt(vx * vx + vy * vy) / std::sqrt(2.0f);
+    return hsv2rgb(hue, saturation, 100.0f);
+}
 
 int main(int argc, char const *argv[])
 {
@@ -478,34 +492,14 @@ int main(int argc, char const *argv[])
         std::cout << "Rendering optical flowmap (HSV colors)..." << std::endl;
 
     std::vector<unsigned char> flowmap(mv_width * mv_height * 3);
-
     #pragma omp parallel for collapse(2)
     for (int i=0; i < mv_height; ++i){
         for (int j = 0; j < mv_width; ++j) {
-
             int* v = &mv[0] + (2 * (i * mv_width + j));
-            float vx = static_cast<float>(v[0]);
-            float vy = static_cast<float>(v[1]);
+            float vx = static_cast<float>(v[0]) / static_cast<float>(args.max_search);
+            float vy = static_cast<float>(v[1]) / static_cast<float>(args.max_search);
 
-            Color color;
-            if(args.color_map == UV){
-                float r =  0.5f * 255.0f * (1.0f + static_cast<float>(vx) / static_cast<float>(args.max_search));
-                r = r < 0 ? 0 : r > 255 ? 255 : r;
-                float g = 0.5f * 255.0f * (1.0f + static_cast<float>(vy) / static_cast<float>(args.max_search));
-                g = g < 0 ? 0 : g > 255 ? 255 : g;
-                color.r = static_cast<unsigned char>(r);
-                color.g = static_cast<unsigned char>(g);
-                color.b = 0;
-            } else if(args.color_map == HSV){
-                if(vx*vx + vy*vy > 0){
-                    float angle = std::atan2(vy, vx);
-                    float hue = (angle > 0 ? angle : (2.f * PI + angle)) * 180.f / PI;
-                    float max_length = std::sqrt(static_cast<float>(2 * args.max_search * args.max_search));
-                    float saturation = 100.0f * std::sqrt(vx * vx + vy * vy) / max_length;
-                    color = hsv2rgb(hue, saturation, 100.0f);
-                } else
-                    color = {255, 255, 255};
-            }
+            Color color = args.color_map == UV ? vec2uv(vx, vy) : vec2hsv(vx, vy);
             
             unsigned char* pixel = &flowmap[0] + (3 * (i * mv_width + j));
             pixel[0] = color.r;
