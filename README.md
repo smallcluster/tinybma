@@ -11,6 +11,14 @@
 
 > ℹ️ Current implementation doesn't support subpixel motion.
 
+<details open>
+
+<summary>Video demo</summary>
+
+[![YT demo](http://img.youtube.com/vi/JUaUOEDbU1Y/0.jpg)](https://www.youtube.com/watch?v=JUaUOEDbU1Y)
+
+</details>
+
 ## Build
 
 ```bash
@@ -51,6 +59,3 @@ Which produces the following optical flowmap and residue based on two frames fro
 |-------|------|-----------------------------------------------------------------------------------------------------------------------|
 |Option | `--colormap hsv` or `-c hsv`      | `--colormap uv` or `-c uv`             |
 |Result| <img src="./example/flowmap_b4_m16.png" width="100%" /> | <img src="./example/flowmap_b4_m16_uv.png" width="100%" />  |
-
-
-
