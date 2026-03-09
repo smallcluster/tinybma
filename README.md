@@ -44,7 +44,7 @@ Which produces the following optical flowmap and residue based on two frames fro
 
 <p align="center">
     <img src="./example/flowmap_b4_m16.png" width="50%" /><img src="./example/flowmap_b4_m16_residue.png" width="50%" />
-    1/4 optical flowmap with max search of 16px + 1 subpixel (left) and its residual residual image (right)
+    1/4 optical flowmap with max search of 16px + 1 subpixel (left) and the residual image (right)
 </p>
 <p align="center">
     <img src="./example/flowmap_b4_m16_prediction.png" width="100%" /><br/>
