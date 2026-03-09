@@ -3,7 +3,6 @@
 #include <vector>
 #include <chrono>
 #include <omp.h>
-#include <optional>
 
 #define PI 3.14159265358979311600f
 
@@ -13,7 +12,7 @@
 #include "external/stb_image_write.h"
 
 #define DEFAULT_BLOCKSIZE 16
-#define DEFAULT_MAXSEARCH 48
+#define DEFAULT_MAXSEARCH 32
 #define DEFAULT_SUBPIXELS 1
 
 //------------------------------------------------------------------------------------------------------------------------------
@@ -96,9 +95,9 @@ inline Color hsv2rgb(float H, float S, float V) {
     case 5: r = v, g = p, b = q; break;
     }
 
-    return { static_cast<unsigned char>(clipf(r * 255.f)),
-             static_cast<unsigned char>(clipf(g * 255.f)),
-             static_cast<unsigned char>(clipf(b * 255.f)) };
+    return { static_cast<unsigned char>(clipf(r * 255.f + 0.5f)),
+             static_cast<unsigned char>(clipf(g * 255.f + 0.5f)),
+             static_cast<unsigned char>(clipf(b * 255.f + 0.5f)) };
 }
 
 // Adapted from https://learn.microsoft.com/fr-fr/windows/win32/medfound/recommended-8-bit-yuv-formats-for-video-rendering#converting-rgb888-to-yuv-444
@@ -314,100 +313,112 @@ void display_help(){
     << "-l, --luma               Export converted sRGB -> YUV 4:4:4 BT.601 's luma component of the REF_IMG and TARGET_IMG.\n"
     << "-r, --residue            Export the luma residue used to reconstruct the TARGET_IMG's luma value.\n"
     << "-c, --colormap [hsv|uv]  Choose the colormap to visualize the optical flow. Default=hsv\n"
-    << "-s, --subpixels [INT]     How many allowed subpixels, set to 0 to disable subpixel motion. Default=" << DEFAULT_SUBPIXELS << "\n"
-    << "-p, --prediction          Export luma prediction computed from the motion vectors.\n"
+    << "-s, --subpixels [INT]    How many allowed subpixels, set to 0 to disable subpixel motion. Default=" << DEFAULT_SUBPIXELS << "\n"
+    << "-p, --prediction         Export luma prediction computed from the motion vectors.\n"
     << std::endl;
 }
 
-inline float interpolate_linear(float t, float start, float end){
-    return t * end + (1.0f-t) * start;
+inline float interpolate_bilinear(float fx, float fy, float A, float B, float C, float D) {
+    float w1 = (1 - fx) * (1 - fy);
+    float w2 = fx * (1 - fy);
+    float w3 = (1 - fx) * fy;
+    float w4 = fx * fy;
+
+    return A*w1 + B*w2 + C*w3 + D*w4;
 }
 
-inline float interpolate_bilinear(float x, float y, float top_left, float top_right, float bottom_left, float bottom_right){
-    return interpolate_linear(y, interpolate_linear(x, top_left, top_right), interpolate_linear(x, bottom_left, bottom_right));
-}
 
-std::vector<unsigned char> upscaling_bilinear(const std::vector<unsigned char>& input_y, int img_width, int img_height, int scale){
-    int up_width = img_width * scale;
-    int up_height = img_height * scale;
-    std::vector<unsigned char> up_y(up_width*up_height);
-
-    #pragma omp parallel for collapse(2)
-    for (int y = 0; y < up_height; ++y){
-        for(int x = 0; x < up_width; ++x){
-            // Original pixels
-            if(x % scale == 0 && y % scale == 0){
-                up_y[y * up_width + x] = input_y[ (y / scale) * img_width + (x/scale)];
-            } else {
-                // Interpolate
-                unsigned char top_left = input_y[ (y / scale) * img_width + (x/scale)];
-                unsigned char top_right = input_y[ (y / scale) * img_width + (x/scale + 1)];
-                unsigned char bottom_left = input_y[ (y / scale + 1) * img_width + (x/scale)];
-                unsigned char bottom_right = input_y[ (y / scale + 1) * img_width + (x/scale + 1)];
-                float tx = static_cast<float>(x % scale) / static_cast<float>(scale);
-                float ty = static_cast<float>(y % scale) / static_cast<float>(scale);
-                float value = clampf(interpolate_bilinear(tx, ty, top_left, top_right, bottom_left, bottom_right), 0, 255);
-                up_y[y * up_width + x] = static_cast<unsigned char>(value);
-            }
-        }
-    }
-    
-    return std::move(up_y);
-}
-
-inline float block_mse(int mx, int my, int bx, int by, int block_size, const std::vector<unsigned char>&input_y, const std::vector<unsigned char>&target_y, int input_width, int input_height, int target_width, int target_height, int scale){
-    float mse = 0;
+inline unsigned int pixel_block_sad(int mx, int my, int bx, int by, int block_size, const std::vector<unsigned char>&input_y, const std::vector<unsigned char>&target_y, int img_width, int img_height){
+    unsigned int sad = 0;
     for (int ky = 0; ky < block_size; ++ky) {
         for (int kx = 0; kx < block_size; ++kx) {
-
-            int src_x = bx * block_size + kx;
-            int src_y = by * block_size + ky;
-            int dest_x = bx * scale * block_size + kx + mx;
-            int dest_y = by * scale * block_size + ky + my;
-
-            // Ignore out of bounds pixels from the current bloc
-            if (src_x >= input_width || src_y >= input_height)
-                continue;
-
-            // Consider out of bound pixel after moving to be full of zeros
-            int e;
-            if(dest_x < 0 || dest_y < 0 || dest_x >= target_width || dest_y >= target_height)
-                e = 0;
-            else
-                e = target_y[dest_y * target_width + dest_x];
-
-            int d = e - input_y[src_y * input_width + src_x];
-            mse += static_cast<float>(d*d);
+            int src_x = clamp(bx * block_size + kx, 0, img_width-1);
+            int src_y = clamp(by * block_size + ky, 0, img_height-1);
+            int dest_x = clamp(src_x + mx, 0, img_width-1);
+            int dest_y = clamp(src_y + my, 0, img_height-1);
+            int d = target_y[src_y * img_width + src_x] - input_y[dest_y * img_width + dest_x];
+            sad += std::abs(d);
         }
     }
-    return mse / static_cast<float>(block_size*block_size);
+    return sad;
 }
 
-inline void fsbma(int bx, int by, int block_size, int max_search, std::vector<float>&mv, int mv_width, const std::vector<unsigned char>&input_y, const std::vector<unsigned char>&target_y, int input_width, int input_height, int target_width, int target_height, int scale){
+inline unsigned int subpixel_block_sad(int mx, int my, int sx, int sy, int subpixels, int bx, int by, int block_size, const std::vector<unsigned char>& input_y, const std::vector<unsigned char>& target_y, int img_width, int img_height) {
+    unsigned int sad = 0;
+    for (int ky = 0; ky < block_size; ++ky) {
+        for (int kx = 0; kx < block_size; ++kx) {
+            int src_x = clamp(bx * block_size + kx, 0, img_width - 1);
+            int src_y = clamp(by * block_size + ky, 0, img_height - 1);
+
+            float mvx = static_cast<float>(mx) + static_cast<float>(sx) / static_cast<float>(subpixels + 1);
+            float mvy = static_cast<float>(my) + static_cast<float>(sy) / static_cast<float>(subpixels + 1);
+
+            float ref_x = src_x + mvx;
+            float ref_y = src_y + mvy;
+
+            int ix = std::floor(ref_x);
+            int iy = std::floor(ref_y);
+            float fx = ref_x - ix;
+            float fy = ref_y - iy;
+
+            ix = clamp(ix, 0, img_width - 2);
+            iy = clamp(ix, 0, img_height - 2);
+
+            unsigned char A = input_y[iy * img_width + ix];
+            unsigned char B = input_y[iy * img_width + ix + 1];
+            unsigned char C = input_y[(iy + 1) * img_width + ix];
+            unsigned char D = input_y[(iy + 1) * img_width + ix + 1];
+
+            float valf = interpolate_bilinear(fx, fy, A, B, C, D);
+            unsigned char val = static_cast<unsigned char>(clampf(valf + 0.5f, 0.f, 255.f));
+            int d = target_y[src_y * img_width + src_x] - val;
+            sad += std::abs(d);
+        }
+    }
+    return sad;
+}
+
+inline void fsbma(int bx, int by, int block_size, int max_search, std::vector<float>&mv, int mv_width, const std::vector<unsigned char>&input_y, const std::vector<unsigned char>&target_y, int img_width, int img_height, int subpixels){
     // Use current position as the initial best MSE
     // Ensures the best selected vector is (0,0) if all motions are equal.
     int best_mv_x = 0;
     int best_mv_y = 0;
-    float best_mse = block_mse(best_mv_x, best_mv_y, bx, by, block_size, input_y, target_y, input_width, input_height, target_width, target_height, scale);
-    // Perform lookup in target image over all possible direction
-    // and keep the best one
-    for (int my = -max_search*scale; my <= max_search*scale; ++my) {
-        for (int mx = -max_search*scale; mx <= max_search*scale; ++mx) {
+    unsigned int best_sad = pixel_block_sad(best_mv_x, best_mv_y, bx, by, block_size, input_y, target_y, img_width, img_height);
+    // Perform lookup over all possible integer direction and keep the best one
+    for (int my = -max_search; my <= max_search; ++my) {
+        for (int mx = -max_search; mx <= max_search; ++mx) {
             // The no motion case is already precomputed
             if(my == 0 && mx == 0)
                 continue;
-            float mse = block_mse(mx, my, bx, by, block_size, input_y, target_y, input_width, input_height, target_width, target_height, scale);
-            if (mse < best_mse) {
-                best_mse = mse;
+            unsigned int  sad = pixel_block_sad(mx, my, bx, by, block_size, input_y, target_y, img_width, img_height);
+            if (sad < best_sad) {
+                best_sad = sad;
                 best_mv_x = mx;
                 best_mv_y = my;
             }
         }
     }
+    // Perform lookup over all possible subpixels direction and keep the best one
+    int best_mv_sx = 0;
+    int best_mv_sy = 0;
+    for (int my = -subpixels; my <= subpixels; ++my) {
+        for (int mx = -subpixels; mx <= subpixels; ++mx) {
+            // The no motion case is already precomputed
+            if (my == 0 && mx == 0)
+                continue;
+            unsigned int  sad = subpixel_block_sad(best_mv_x, best_mv_y, mx, my, subpixels, bx, by, block_size, input_y, target_y, img_width, img_height);
+            if (sad < best_sad) {
+                best_sad = sad;
+                best_mv_sx = mx;
+                best_mv_sy = my;
+            }
+        }
+    }
+
     // Store best motion vector
     float* v = &mv[0] + (2 * (by * mv_width + bx));
-    v[0] = best_mv_x / scale;
-    v[1] = best_mv_y / scale;
+    v[0] = static_cast<float>(best_mv_x) + static_cast<float>(best_mv_sx) / static_cast<float>(subpixels + 1);
+    v[1] = static_cast<float>(best_mv_y) + static_cast<float>(best_mv_sy) / static_cast<float>(subpixels + 1);
 }
 
 inline void update_progress(int* progress, int total, bool enabled){
@@ -423,7 +434,7 @@ inline void update_progress(int* progress, int total, bool enabled){
 inline Color vec2uv(float vx, float vy){
     float r =  0.5f * 255.0f * (1.0f + vx);
     float g = 0.5f * 255.0f * (1.0f + vy);
-    return {static_cast<unsigned char>(clipf(r)), static_cast<unsigned char>(clipf(g)), 0};
+    return {static_cast<unsigned char>(clipf(r + 0.5f)), static_cast<unsigned char>(clipf(g + 0.5f)), 0};
 }
 
 inline Color vec2hsv(float vx, float vy) {
@@ -477,13 +488,18 @@ int main(int argc, char const *argv[])
             << "\n"
             << "Running full block matching algorithm with config:\n"
             << "    --blocksize " << std::to_string(args.block_size) << "\n"
-            << "    --maxsearch " << std::to_string(args.max_search) << "\n";
+            << "    --maxsearch " << std::to_string(args.max_search) << "\n"
+            << "    --subpixels " << std::to_string(args.subpixels)  << "\n"
+            << "    --colormap " << (args.color_map == HSV ? "hsv" : "uv")  << "\n";
         if(args.export_luma){
             std::cout << "Reference Luma in BT.601 will be exported to "<< input_luma_path <<"\n"
                       << "Target Luma in BT.601 will be exported to "<< target_luma_path <<"\n";
         }
         if(args.export_residue){
             std::cout << "Residue image will be exported to " << residue_path << "\n";
+        }
+        if(args.export_prediction){
+            std::cout << "Predicted image will be exported to " << prediction_path << "\n";
         }
         std::cout << std::endl;
     }
@@ -514,25 +530,21 @@ int main(int argc, char const *argv[])
         return 1;
     }
 
-    int img_width = input_width;
-    int img_height = input_height;
-    int img_channels = input_channels;
-
-    std::vector<unsigned char> input_y(img_width*img_height);
-    std::vector<unsigned char> target_y(img_width*img_height);
+    std::vector<unsigned char> input_y(input_width * input_height);
+    std::vector<unsigned char> target_y(input_width * input_height);
 
     // Extract YUV 4:4:4 based on BT.601 and only keep the Y component
     if(args.verbose)
         std::cout << "Converting images to Y value (BT.601)..." << std::endl;
     #pragma omp parallel for collapse(2)
-    for(int y=0; y < img_height; ++y){
-        for(int x=0; x < img_width; ++x){
-            int i = img_channels * (y * img_width + x);
+    for(int y=0; y < input_height; ++y){
+        for(int x=0; x < input_width; ++x){
+            int i = input_channels * (y * input_width + x);
             const unsigned char* ip = input_data + i;
             const unsigned char* tp = target_data + i;
             Color ic = srgb2bt601(ip[0], ip[1], ip[2]);
             Color tc = srgb2bt601(tp[0], tp[1], tp[2]);
-            int i_y = y * img_width + x;
+            int i_y = y * input_width + x;
             input_y[i_y] = ic.y;
             target_y[i_y] = tc.y;
         }
@@ -543,13 +555,6 @@ int main(int argc, char const *argv[])
     input_data= nullptr;
     stbi_image_free(target_data);
     target_data = nullptr;
-
-    // Upscale if necessary
-    if(args.subpixels > 0){
-        target_width = target_width * (args.subpixels+1);
-        target_height = target_height * (args.subpixels+1);
-        target_y = upscaling_bilinear(target_y, img_width, img_height, args.subpixels+1);
-    }
 
     // Export bt.601 luma values without converting to sRGB
     if(args.export_luma){
@@ -562,7 +567,7 @@ int main(int argc, char const *argv[])
         }
         if(args.verbose)
                 std::cout << "Saving upscaled target luma to " << target_luma_path << std::endl;
-        r = stbi_write_png(target_luma_path.c_str(), target_width, target_height, 1, target_y.data(), target_width);
+        r = stbi_write_png(target_luma_path.c_str(), input_width, input_height, 1, target_y.data(), input_width);
         if(!r){
             std::cout << "Failed to write upscaled target luma to " << target_luma_path << std::endl;
             return 1;
@@ -570,8 +575,8 @@ int main(int argc, char const *argv[])
     }
 
     // motion vectors
-    int mv_width = img_width / args.block_size + img_width % args.block_size;
-    int mv_height = img_height / args.block_size + img_height % args.block_size;
+    int mv_width = input_width / args.block_size + input_width % args.block_size;
+    int mv_height = input_height / args.block_size + input_height % args.block_size;
 
     std::vector<float> mv(mv_width*mv_height*2);
 
@@ -583,7 +588,7 @@ int main(int argc, char const *argv[])
     #pragma omp parallel for collapse(2)
     for (int by = 0; by < mv_height; ++by) {
         for (int bx = 0; bx < mv_width; ++bx) {
-            fsbma(bx, by, args.block_size, args.max_search, mv, mv_width, input_y, target_y, input_width, input_height, target_width, target_height, args.subpixels+1);
+            fsbma(bx, by, args.block_size, args.max_search, mv, mv_width, input_y, target_y, input_width, input_height, args.subpixels);
             #pragma omp critical
             update_progress(&progress, mv_width * mv_height, args.verbose);
         }
@@ -604,11 +609,10 @@ int main(int argc, char const *argv[])
     for (int i=0; i < mv_height; ++i){
         for (int j = 0; j < mv_width; ++j) {
             float* v = &mv[0] + (2 * (i * mv_width + j));
-            float vx = static_cast<float>(v[0]) / static_cast<float>(args.max_search);
-            float vy = static_cast<float>(v[1]) / static_cast<float>(args.max_search);
-
+            float md = static_cast<float>(args.subpixels) / static_cast<float>(args.subpixels + 1) + static_cast<float>(args.max_search);
+            float vx = v[0] / md;
+            float vy = v[1] / md;
             Color color = args.color_map == UV ? vec2uv(vx, vy) : vec2hsv(vx, vy);
-
             unsigned char* pixel = &flowmap[0] + (3 * (i * mv_width + j));
             pixel[0] = color.r;
             pixel[1] = color.g;
@@ -625,167 +629,55 @@ int main(int argc, char const *argv[])
     if(args.export_residue || args.export_prediction){
         if(args.verbose)
                 std::cout << "Computing prediction..." << std::endl;
-        // Prediction with subpixel blending
-        std::vector<float> prediction(img_width*img_height);
-        std::vector<int> acc(img_width*img_height);
+
+        // Prediction with subpixel
+        std::vector<unsigned char> prediction_y(input_width*input_height);
+
         #pragma omp parallel for collapse(2)
-        for(int y=0; y < img_height; ++y){
-            for(int x=0; x< img_width; ++x){
-                
+        for (int y = 0; y < input_height; ++y) {
+            for (int x = 0; x < input_width; ++x) {
+                float* v = &mv[0] + (2 * ( (y / args.block_size) * mv_width + (x / args.block_size)));
 
-                // Get motion vector for this pixel
-                int bi = (y / args.block_size) * mv_width + (x / args.block_size);
-                float* v = &mv[0] + (2 * bi);
+                float ref_x = x + v[0];
+                float ref_y = y + v[1];
 
-                // Move input pixel to this location
-                int ivx = static_cast<int>(v[0]);
-                int ivy = static_cast<int>(v[1]);
+                int ix = std::floor(ref_x);
+                int iy = std::floor(ref_y);
+                float fx = ref_x - ix;
+                float fy = ref_y - iy;
 
-                float fx = std::abs(v[0]) - std::abs(ivx);
-                float fy = std::abs(v[1]) - std::abs(ivy);
+                float lower_motion = 1.f / static_cast<float>(2*args.subpixels+1);
 
-                int px = clamp(x + ivx, 0, img_width-1);
-                int py = clamp(y + ivy, 0, img_height-1);
-
-                float val = static_cast<float>(input_y[y * img_width + x]) / 255.f;
-
-                // Integer motion => full value on predicted pixel
-                if(v[0] == static_cast<float>(ivx) && v[1] == static_cast<float>(ivy)){
-                    prediction[py * img_width + px] += val;
-                    acc[py * img_width + px] += 1;
-                } 
-                else if(v[0] == 0 && v[1] > 0){
-                    int oy = clamp(py + 1, 0, img_height-1);
-                    prediction[py * img_width + px] += val * (1.f-fy);
-                    acc[py * img_width + px] += 1;
-                    prediction[oy * img_width + px] += val * fy;
-                    acc[oy * img_width + px] += 1;
-                } else if(v[0] == 0 && v[1] < 0){
-                    int oy = clamp(py - 1, 0, img_height-1);
-                    prediction[py * img_width + px] += val * (1.f-fy);
-                    acc[py * img_width + px] += 1;
-                    prediction[oy * img_width + px] += val * fy;
-                    acc[oy * img_width + px] += 1;
-                } else if (v[1] == 0 && v[0] > 0){
-                    int ox = clamp(px + 1, 0, img_width-1);
-                    prediction[py * img_width + px] += val * (1.f-fx);
-                    acc[py * img_width + px] += 1;
-                    prediction[py * img_width + ox] += val * fx;
-                    acc[py * img_width + ox] += 1;
-                } else if (v[1] == 0 && v[0] < 0){
-                    int ox = clamp(px - 1, 0, img_width-1);
-                    prediction[py * img_width + px] += val * (1.f-fx);
-                    acc[py * img_width + px] += 1;
-                    prediction[py * img_width + ox] += val * fx;
-                    acc[py * img_width + ox] += 1;
-                }else if (v[1] > 0 && v[0] > 0){
-                    int ox = clamp(px + 1, 0, img_width-1);
-                    int oy = clamp(py + 1, 0, img_height-1);
-
-                    float top = val * (1.0f-fy);
-                    float bottom = val * fy;
-                    float top_left = top * (1.f-fx);
-                    float top_right = top * fx;
-                    float bottom_left = bottom * (1.f-fx);
-                    float bottom_right = bottom * fx;
-
-                    prediction[py * img_width + px] += top_left;
-                    prediction[py * img_width + ox] += top_right;
-                    prediction[oy * img_width + px] += bottom_left;
-                    prediction[oy * img_width + ox] += bottom_right;
-
-                    acc[py * img_width + px] += 1;
-                    acc[py * img_width + ox] += 1;
-                    acc[oy * img_width + px] += 1;
-                    acc[oy * img_width + ox] += 1;
-                } else if (v[1] < 0 && v[0] > 0){
-                    int ox = clamp(px + 1, 0, img_width-1);
-                    int oy = clamp(py - 1, 0, img_height-1);
-
-                    float top = val * fy;
-                    float bottom = val * (1.f-fy);
-                    float top_left = top * (1.f-fx);
-                    float top_right = top * fx;
-                    float bottom_left = bottom * (1.f-fx);
-                    float bottom_right = bottom * fx;
-
-                    prediction[py * img_width + px] += bottom_left;
-                    prediction[py * img_width + ox] += bottom_right;
-                    prediction[oy * img_width + px] += top_left;
-                    prediction[oy * img_width + ox] += top_right;
-                    acc[py * img_width + px] += 1;
-                    acc[py * img_width + ox] += 1;
-                    acc[oy * img_width + px] += 1;
-                    acc[oy * img_width + ox] += 1;
-                } else if (v[1] > 0 && v[0] < 0){
-                    int ox = clamp(px - 1, 0, img_width-1);
-                    int oy = clamp(py + 1, 0, img_height-1);
-
-                    float top = val * (1.0f-fy);
-                    float bottom = val * fy;
-                    float top_left = top * fx;
-                    float top_right = top * (1.f-fx);
-                    float bottom_left = bottom * fx;
-                    float bottom_right = bottom * (1.f-fx);
-
-                    prediction[py * img_width + px] += top_right;
-                    prediction[py * img_width + ox] += top_left;
-                    prediction[oy * img_width + px] += bottom_right;
-                    prediction[oy * img_width + ox] += bottom_left;
-                    acc[py * img_width + px] += 1;
-                    acc[py * img_width + ox] += 1;
-                    acc[oy * img_width + px] += 1;
-                    acc[oy * img_width + ox] += 1;
-                }else if (v[1] < 0 && v[0] < 0){
-                    int ox = clamp(px - 1, 0, img_width-1);
-                    int oy = clamp(py - 1, 0, img_height-1);
-
-                    float top = val * fy;
-                    float bottom = val * (1.f-fy);
-                    float top_left = top * fx;
-                    float top_right = top * (1.f-fx);
-                    float bottom_left = bottom * fx;
-                    float bottom_right = bottom * (1.f-fx);
-
-                    prediction[py * img_width + px] += bottom_right;
-                    prediction[py * img_width + ox] += bottom_left;
-                    prediction[oy * img_width + px] += top_right;
-                    prediction[oy * img_width + ox] += top_left;
-                    acc[py * img_width + px] += 1;
-                    acc[py * img_width + ox] += 1;
-                    acc[oy * img_width + px] += 1;
-                    acc[oy * img_width + ox] += 1;
+                // Copy pixel value from input
+                if (std::abs(fx) < lower_motion  && std::abs(fy) < lower_motion) {
+                    ix = clamp(ix, 0, input_width - 1);
+                    iy = clamp(iy, 0, input_height - 1);
+                    prediction_y[y * input_width + x] = input_y[iy * input_width + ix];
                 }
-            }
-        }
-        // AVG blending + clamping + merge with input
-        #pragma omp parallel for collapse(2)
-        for(int y=0; y < img_height; ++y){
-            for(int x=0; x< img_width; ++x){
-                int n = acc[y * img_width + x];
-                float val = prediction[y * img_width + x];
-                if(n > 0)
-                    val /= static_cast<float>(n);
-                else
-                    val = static_cast<float>(input_y[y * img_width + x]) / 255.f;
-                prediction[y * img_width + x] = clampf(val, 0.f, 1.f);
-            }
-        }
+                else {
+                    // Copy interpolated value
+                    ix = clamp(ix, 0, input_width - 2);
+                    iy = clamp(iy, 0, input_height - 2);
 
-        // Unormalizing values -> Predicted image
-        std::vector<unsigned char> prediction_y(img_width*img_height);
-        #pragma omp parallel for collapse(2)
-        for(int y=0; y < img_height; ++y){
-            for(int x=0; x< img_width; ++x){
-                float val = prediction[y * img_width + x];
-                prediction_y[y * img_width + x] = static_cast<unsigned char>(clampf(val * 255.f, 0, 255.f));
+                    unsigned char A = input_y[iy * input_width + ix];
+                    unsigned char B = input_y[iy * input_width + ix + 1];
+                    unsigned char C = input_y[(iy + 1) * input_width + ix];
+                    unsigned char D = input_y[(iy + 1) * input_width + ix + 1];
+
+                    float valf = interpolate_bilinear(fx, fy, A, B, C, D);
+
+                    unsigned char val = static_cast<unsigned char>(clampf(valf + 0.5f, 0.f, 255.f));
+                    prediction_y[y * input_width + x] = val;
+                }
+
             }
         }
+        
 
         if(args.export_prediction){
             if(args.verbose)
                 std::cout << "Saving prediction to " << prediction_path << std::endl;
-            int r = stbi_write_png(prediction_path.c_str(), img_width, img_height, 1, prediction_y.data(), img_width);
+            int r = stbi_write_png(prediction_path.c_str(), input_width, input_height, 1, prediction_y.data(), input_width);
             if(!r){
                 std::cout << "Failed to write prediction to " << prediction_path << std::endl;
                 return 1;
@@ -794,21 +686,22 @@ int main(int argc, char const *argv[])
 
         // Save residue
         if(args.export_residue){
-            std::vector<unsigned char> residue(img_width*img_height);
+            std::vector<unsigned char> residue(input_width* input_height);
             if(args.verbose)
                 std::cout << "Computing Residue..." << std::endl;
 
             #pragma omp parallel for collapse(2)
-            for(int y=0; y < img_height; ++y){
-                for(int x=0; x< img_width; ++x){
-                    int i = y * img_width + x;
-                    residue[i] = prediction_y[i] - input_y[i];
+            for(int y=0; y < input_height; ++y){
+                for(int x=0; x< input_width; ++x){
+                    int i = y * input_width + x;
+                    float val = clampf(0.5f * (255.f + static_cast<float>(prediction_y[i] - target_y[i])) + 0.5f, 0, 255);
+                    residue[i] = static_cast<unsigned char>(val);
                 }
             }
 
             if(args.verbose)
                 std::cout << "Saving Residue to " << residue_path << std::endl;
-            int r = stbi_write_png(residue_path.c_str(), img_width, img_height, 1, residue.data(), img_width);
+            int r = stbi_write_png(residue_path.c_str(), input_width, input_height, 1, residue.data(), input_width);
             if(!r){
                 std::cout << "Failed to write residue to " << residue_path << std::endl;
                 return 1;
